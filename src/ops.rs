@@ -14,12 +14,27 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use argon2;
 use blake3;
 
 pub const IPAD: u8 = 0x36;
 pub const OPAD: u8 = 0x5c;
 
-pub fn hmac(verify: &Vec<u8>, key: &Vec<u8>) -> Vec<u8> {
+pub fn keyDerive(iv: &Vec<u8>, key: &Vec<u8>) -> Vec<u8> {
+    let Deriver = argon2::Argon2::new(argon2::Algorithm::default(), argon2::Version::default(), {
+        let mut Params = argon2::ParamsBuilder::new();
+        Params.output_len(crate::BLOCK_SIZE).unwrap();
+        Params.params().unwrap()
+    });
+
+    let mut Derived = [0; crate::BLOCK_SIZE];
+
+    Deriver.hash_password_into(&key, &iv, &mut Derived).unwrap();
+
+    Derived.to_vec()
+}
+
+pub fn keyedHash(verify: &Vec<u8>, key: &Vec<u8>) -> Vec<u8> {
     let keyIpad: Vec<u8> = xor(key, IPAD.to_be_bytes().to_vec().as_ref());
     let keyOpad: Vec<u8> = xor(key, OPAD.to_be_bytes().to_vec().as_ref());
 

@@ -20,8 +20,9 @@ pub mod actions;
 pub mod ops;
 
 use actions::Action;
-use ops::{hmac, xor};
+use ops::{keyDerive, keyedHash, xor};
 
+use argon2;
 use rand::{thread_rng, Rng};
 
 pub const BLOCK_SIZE: usize = 64;
@@ -36,13 +37,15 @@ pub struct Cypher {
 
 impl Cypher {
     pub fn process(&self) -> Result<Vec<u8>, &str> {
-        assert!(BLOCK_SIZE > 4);
+        assert!(BLOCK_SIZE <= argon2::MAX_SALT_LEN);
+        assert!(BLOCK_SIZE >= argon2::MIN_SALT_LEN && BLOCK_SIZE >= 4);
+        assert!(self.key.len() <= argon2::MAX_PWD_LEN);
         match self.action {
             Action::Encrypt => {
                 let mut rng = thread_rng();
                 let iv: Vec<u8> = (0..BLOCK_SIZE).map(|_| rng.gen_range(0..u8::MAX)).collect();
 
-                let devKey = hmac(&iv, &self.key);
+                let devKey = keyDerive(&iv, &self.key);
 
                 let decrypted = self.input.chunks(BLOCK_SIZE);
                 let mut encrypted: Vec<Vec<u8>> = vec![];
@@ -52,11 +55,11 @@ impl Cypher {
                         if let Some(lastBlock) = encrypted.last() {
                             lastBlock.to_vec()
                         } else {
-                            hmac(&iv, &devKey)
+                            keyedHash(&iv, &devKey)
                         }
                     };
-                    let lastBlockHash = hmac(&lastBlockProcessed, &devKey);
-                    let mut counter: Vec<u8> = hmac(&offset.to_be_bytes().to_vec(), &devKey);
+                    let lastBlockHash = keyedHash(&lastBlockProcessed, &devKey);
+                    let mut counter: Vec<u8> = keyedHash(&offset.to_be_bytes().to_vec(), &devKey);
                     for time in 0..ROUNDS {
                         let mut rotatedKey = devKey.clone();
                         rotatedKey.rotate_right(time % &devKey.len());
@@ -66,12 +69,17 @@ impl Cypher {
                     encrypted.push(xor(&xor(&block.to_vec(), &counter), &lastBlockHash));
                 }
 
-                Ok([iv, encrypted.concat(), hmac(&encrypted.concat(), &devKey)].concat())
+                Ok([
+                    iv,
+                    encrypted.concat(),
+                    keyedHash(&encrypted.concat(), &devKey),
+                ]
+                .concat())
             }
             Action::Decrypt => {
                 let iv: Vec<u8> = self.input.get(0..BLOCK_SIZE).unwrap().to_vec();
 
-                let devKey = hmac(&iv, &self.key);
+                let devKey = keyDerive(&iv, &self.key);
 
                 let encrypted = self
                     .input
@@ -84,7 +92,7 @@ impl Cypher {
                     .unwrap()
                     .to_vec();
 
-                if hmac(&encrypted, &devKey) != tag {
+                if keyedHash(&encrypted, &devKey) != tag {
                     return Err("Bad data integrity!");
                 }
 
@@ -96,13 +104,13 @@ impl Cypher {
                         if let Some(lastBlock) = lastEncryptedBlock {
                             lastBlock.to_vec()
                         } else {
-                            hmac(&iv, &devKey)
+                            keyedHash(&iv, &devKey)
                         }
                     };
                     lastEncryptedBlock = Some(block.to_vec());
 
-                    let lastBlockHash = hmac(&lastEncryptedBlockProcessed, &devKey);
-                    let mut counter: Vec<u8> = hmac(&offset.to_be_bytes().to_vec(), &devKey);
+                    let lastBlockHash = keyedHash(&lastEncryptedBlockProcessed, &devKey);
+                    let mut counter: Vec<u8> = keyedHash(&offset.to_be_bytes().to_vec(), &devKey);
                     for time in 0..ROUNDS {
                         let mut rotatedKey = devKey.clone();
                         rotatedKey.rotate_right(ROUNDS - (time % &devKey.len()) - 1);
