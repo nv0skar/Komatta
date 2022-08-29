@@ -17,7 +17,7 @@
 use std::fmt;
 use std::str;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Action {
     Encrypt,
     Decrypt,

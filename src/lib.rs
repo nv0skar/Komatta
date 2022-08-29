@@ -1,7 +1,7 @@
 // Komatta
 // Copyright (C) 2022 Oscar
 //
-// This program is fre&e software: you can redistribute it and/or modify
+// This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as published
 // by the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
@@ -17,107 +17,128 @@
 #![allow(non_snake_case)]
 
 pub mod actions;
+pub mod defaults;
 pub mod ops;
+pub mod parameters;
 
 use actions::Action;
 use ops::{keyDerive, keyedHash, xor};
+use parameters::Parameters;
 
 use argon2;
 use rand::{thread_rng, Rng};
-
-pub const BLOCK_SIZE: usize = 64;
-pub const ROUNDS: usize = 32;
 
 #[derive(Debug)]
 pub struct Cypher {
     pub action: actions::Action,
     pub key: Vec<u8>,
     pub input: Vec<u8>,
+    pub parameters: Option<Parameters>,
 }
 
 impl Cypher {
     pub fn process(&self) -> Result<Vec<u8>, &str> {
-        assert!(BLOCK_SIZE <= argon2::MAX_SALT_LEN);
-        assert!(BLOCK_SIZE >= argon2::MIN_SALT_LEN && BLOCK_SIZE >= 4);
-        assert!(self.key.len() <= argon2::MAX_PWD_LEN);
+        assert!(defaults::MIN_KEY_SIZE <= self.key.len() && argon2::MAX_PWD_LEN >= self.key.len());
         match self.action {
             Action::Encrypt => {
+                let parameters = self.parameters.unwrap_or(Parameters::default());
+                parameters.check();
+
                 let mut rng = thread_rng();
-                let iv: Vec<u8> = (0..BLOCK_SIZE).map(|_| rng.gen_range(0..u8::MAX)).collect();
+                let iv: Vec<u8> = (0..parameters.iv_size)
+                    .map(|_| rng.gen_range(0..u8::MAX))
+                    .collect();
 
                 let devKey = keyDerive(&iv, &self.key);
 
-                let decrypted = self.input.chunks(BLOCK_SIZE);
+                let decrypted = self.input.chunks(parameters.block_size.into());
                 let mut encrypted: Vec<Vec<u8>> = vec![];
 
                 for (offset, block) in decrypted.enumerate() {
-                    let lastBlockProcessed = {
+                    let lastEncryptedBlock = {
                         if let Some(lastBlock) = encrypted.last() {
                             lastBlock.to_vec()
                         } else {
-                            keyedHash(&iv, &devKey)
+                            keyedHash(&iv, &devKey, parameters.keyed_hash_size)
                         }
                     };
-                    let lastBlockHash = keyedHash(&lastBlockProcessed, &devKey);
-                    let mut counter: Vec<u8> = keyedHash(&offset.to_be_bytes().to_vec(), &devKey);
-                    for time in 0..ROUNDS {
-                        let mut rotatedKey = devKey.clone();
-                        rotatedKey.rotate_right(time % &devKey.len());
-                        counter = xor(&counter, &rotatedKey);
-                    }
-                    counter = xor(&counter, &lastBlockHash);
-                    encrypted.push(xor(&xor(&block.to_vec(), &counter), &lastBlockHash));
+
+                    let mut counter: Vec<u8> = keyedHash(
+                        &offset.to_be_bytes().to_vec(),
+                        &devKey,
+                        parameters.keyed_hash_size,
+                    );
+                    counter = xor(&counter, &lastEncryptedBlock);
+
+                    encrypted.push(xor(&block.to_vec(), &counter));
                 }
 
                 Ok([
+                    parameters.into(),
                     iv,
                     encrypted.concat(),
-                    keyedHash(&encrypted.concat(), &devKey),
+                    keyedHash(&encrypted.concat(), &devKey, parameters.tag_size),
                 ]
                 .concat())
             }
             Action::Decrypt => {
-                let iv: Vec<u8> = self.input.get(0..BLOCK_SIZE).unwrap().to_vec();
+                let parameters = {
+                    let size = Parameters::paramsLen();
+                    (
+                        size,
+                        Parameters::from(self.input.get(0..size).unwrap().to_vec()),
+                    )
+                };
+                parameters.1.check();
 
-                let devKey = keyDerive(&iv, &self.key);
+                let iv: Vec<u8> = self
+                    .input
+                    .get(parameters.0..(parameters.1.iv_size as usize + parameters.0))
+                    .unwrap()
+                    .to_vec();
 
                 let encrypted = self
                     .input
-                    .get(BLOCK_SIZE..(self.input.len() - BLOCK_SIZE))
+                    .get(
+                        (parameters.1.iv_size as usize + parameters.0)
+                            ..(self.input.len() - parameters.1.tag_size as usize),
+                    )
                     .unwrap()
                     .to_vec();
                 let tag = self
                     .input
-                    .get((self.input.len() - BLOCK_SIZE)..self.input.len())
+                    .get((self.input.len() - parameters.1.tag_size as usize)..self.input.len())
                     .unwrap()
                     .to_vec();
 
-                if keyedHash(&encrypted, &devKey) != tag {
+                let devKey = keyDerive(&iv, &self.key);
+
+                if keyedHash(&encrypted, &devKey, parameters.1.tag_size) != tag {
                     return Err("Bad data integrity!");
                 }
 
                 let mut lastEncryptedBlock: Option<Vec<u8>> = None;
                 let mut decrypted: Vec<Vec<u8>> = vec![];
 
-                for (offset, block) in encrypted.chunks(BLOCK_SIZE).enumerate() {
+                for (offset, block) in encrypted.chunks(parameters.1.block_size.into()).enumerate()
+                {
                     let lastEncryptedBlockProcessed = {
                         if let Some(lastBlock) = lastEncryptedBlock {
                             lastBlock.to_vec()
                         } else {
-                            keyedHash(&iv, &devKey)
+                            keyedHash(&iv, &devKey, parameters.1.keyed_hash_size)
                         }
                     };
                     lastEncryptedBlock = Some(block.to_vec());
 
-                    let lastBlockHash = keyedHash(&lastEncryptedBlockProcessed, &devKey);
-                    let mut counter: Vec<u8> = keyedHash(&offset.to_be_bytes().to_vec(), &devKey);
-                    for time in 0..ROUNDS {
-                        let mut rotatedKey = devKey.clone();
-                        rotatedKey.rotate_right(ROUNDS - (time % &devKey.len()) - 1);
-                        counter = xor(&counter, &rotatedKey);
-                    }
-                    counter = xor(&counter, &lastBlockHash);
-                    decrypted.push(xor(&xor(&block.to_vec(), &counter), &lastBlockHash));
+                    let mut counter: Vec<u8> = keyedHash(
+                        &offset.to_be_bytes().to_vec(),
+                        &devKey,
+                        parameters.1.keyed_hash_size,
+                    );
+                    counter = xor(&counter, &lastEncryptedBlockProcessed);
+
+                    decrypted.push(xor(&block.to_vec(), &counter));
                 }
 
                 Ok(decrypted.concat())
@@ -137,18 +158,17 @@ mod Tests {
         let input: Vec<u8> = (0..128).map(|_| rng.gen_range(0..u8::MAX)).collect();
         let key: Vec<u8> = (0..64).map(|_| rng.gen_range(0..u8::MAX)).collect();
 
-        let mut crypto = crate::Cypher {
+        let mut crypt = crate::Cypher {
             action: crate::Action::Encrypt,
             key,
             input: input.clone(),
+            parameters: None,
         };
 
-        let encrypted = crypto.process().unwrap();
+        crypt.input = crypt.process().unwrap();
+        crypt.action = crate::Action::Decrypt;
 
-        crypto.action = crate::Action::Decrypt;
-        crypto.input = encrypted;
-
-        let decrypted = crypto.process().unwrap();
+        let decrypted = crypt.process().unwrap();
 
         assert_eq!(input, decrypted);
     }
