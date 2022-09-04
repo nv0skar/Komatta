@@ -14,19 +14,33 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::ops::Range;
+#![allow(non_snake_case)]
 
-use argon2;
-use blake3;
+use Komatta::{keys::Keys, ops::randomness, target::Target, Crypt, Integrity};
 
-pub const BLOCK_SIZE: u8 = 64;
-pub const KEYED_HASH_SIZE: u8 = 32;
-pub const IV_SIZE: u8 = 8;
-pub const TAG_SIZE: u8 = 16;
+#[test]
+fn crypt() -> Result<(), String> {
+    let input = randomness(128);
 
-pub const BLOCK_SIZE_RANGE: Range<u8> = 4..u8::MAX;
-pub const KEYED_HASH_SIZE_RANGE: Range<u8> = blake3::OUT_LEN as u8..u8::MAX;
-pub const IV_SIZE_RANGE: Range<u8> = argon2::MIN_SALT_LEN as u8..argon2::MAX_SALT_LEN as u8;
-pub const TAG_SIZE_RANGE: Range<u8> = 16..u8::MAX;
+    let mut crypt = Crypt::new(
+        Target::Encrypt,
+        Keys::new(None, None, true)?,
+        None,
+        None,
+        input.clone(),
+        Integrity::Signed(None),
+    );
 
-pub const MIN_KEY_SIZE: usize = 16;
+    crypt.input = crypt.process()?;
+
+    crypt.target = Target::Decrypt;
+
+    crypt.keys = Keys::from(crypt.keys.public()?);
+
+    let decrypted = crypt.process()?;
+
+    match input == decrypted {
+        true => Ok(()),
+        false => Err("Input and decrypted bytes are not equal!".to_string()),
+    }
+}

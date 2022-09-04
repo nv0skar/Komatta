@@ -17,13 +17,15 @@
 use std::fmt;
 use std::str;
 
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum Action {
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
+pub enum Target {
     Encrypt,
     Decrypt,
 }
 
-impl fmt::Display for Action {
+impl fmt::Display for Target {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Self::Encrypt => write!(formatter, "encrypt"),
@@ -32,19 +34,25 @@ impl fmt::Display for Action {
     }
 }
 
-impl str::FromStr for Action {
+impl str::FromStr for Target {
     type Err = String;
 
     fn from_str(action: &str) -> Result<Self, Self::Err> {
         match action.to_lowercase().as_str() {
-            "encrypt" => Ok(Action::Encrypt),
-            "decrypt" => Ok(Action::Decrypt),
+            "encrypt" => Ok(Target::Encrypt),
+            "decrypt" => Ok(Target::Decrypt),
             _ => Err(format!(
                 "Unknown action '{}', the options are '{}' & '{}'!",
                 action,
-                Action::Encrypt,
-                Action::Decrypt
+                Target::Encrypt,
+                Target::Decrypt
             )),
         }
+    }
+}
+
+impl Default for Target {
+    fn default() -> Self {
+        Self::Encrypt
     }
 }

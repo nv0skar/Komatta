@@ -16,160 +16,228 @@
 
 #![allow(non_snake_case)]
 
-pub mod actions;
-pub mod defaults;
+pub mod config;
+pub mod keys;
 pub mod ops;
-pub mod parameters;
+pub mod target;
 
-use actions::Action;
-use ops::{keyDerive, keyedHash, xor};
-use parameters::Parameters;
+use crate::keys::Keys;
+use crate::ops::{exclusiveOR, keyedHash, randomness};
+use crate::target::Target;
 
-use argon2;
-use rand::{thread_rng, Rng};
+use flexbuffers;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug)]
-pub struct Cypher {
-    pub action: actions::Action,
-    pub key: Vec<u8>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Crypt {
+    #[serde(skip_serializing, skip_deserializing)]
+    pub target: Target,
+    #[serde(skip_serializing, skip_deserializing)]
+    pub keys: Keys,
+    block_size: u16,
+    iv: Vec<u8>,
     pub input: Vec<u8>,
-    pub parameters: Option<Parameters>,
+    pub integrity: Integrity,
 }
 
-impl Cypher {
-    pub fn process(&self) -> Result<Vec<u8>, &str> {
-        assert!(defaults::MIN_KEY_SIZE <= self.key.len() && argon2::MAX_PWD_LEN >= self.key.len());
-        match self.action {
-            Action::Encrypt => {
-                let parameters = self.parameters.unwrap_or(Parameters::default());
-                parameters.check();
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Integrity {
+    Signed(Option<Vec<u8>>),
+    Unsigned(Option<Vec<u8>>),
+}
 
-                let mut rng = thread_rng();
-                let iv: Vec<u8> = (0..parameters.iv_size)
-                    .map(|_| rng.gen_range(0..u8::MAX))
-                    .collect();
-
-                let devKey = keyDerive(&iv, &self.key);
-
-                let decrypted = self.input.chunks(parameters.block_size.into());
-                let mut encrypted: Vec<Vec<u8>> = vec![];
-
-                for (offset, block) in decrypted.enumerate() {
-                    let lastEncryptedBlock = {
-                        if let Some(lastBlock) = encrypted.last() {
-                            lastBlock.to_vec()
-                        } else {
-                            keyedHash(&iv, &devKey, parameters.keyed_hash_size)
-                        }
-                    };
-
-                    let mut counter: Vec<u8> = keyedHash(
-                        &offset.to_be_bytes().to_vec(),
-                        &devKey,
-                        parameters.keyed_hash_size,
-                    );
-                    counter = xor(&counter, &lastEncryptedBlock);
-
-                    encrypted.push(xor(&block.to_vec(), &counter));
-                }
-
-                Ok([
-                    parameters.into(),
-                    iv,
-                    encrypted.concat(),
-                    keyedHash(&encrypted.concat(), &devKey, parameters.tag_size),
-                ]
-                .concat())
-            }
-            Action::Decrypt => {
-                let parameters = {
-                    let size = Parameters::paramsLen();
-                    (
-                        size,
-                        Parameters::from(self.input.get(0..size).unwrap().to_vec()),
-                    )
-                };
-                parameters.1.check();
-
-                let iv: Vec<u8> = self
-                    .input
-                    .get(parameters.0..(parameters.1.iv_size as usize + parameters.0))
-                    .unwrap()
-                    .to_vec();
-
-                let encrypted = self
-                    .input
-                    .get(
-                        (parameters.1.iv_size as usize + parameters.0)
-                            ..(self.input.len() - parameters.1.tag_size as usize),
-                    )
-                    .unwrap()
-                    .to_vec();
-                let tag = self
-                    .input
-                    .get((self.input.len() - parameters.1.tag_size as usize)..self.input.len())
-                    .unwrap()
-                    .to_vec();
-
-                let devKey = keyDerive(&iv, &self.key);
-
-                if keyedHash(&encrypted, &devKey, parameters.1.tag_size) != tag {
-                    return Err("Bad data integrity!");
-                }
-
-                let mut lastEncryptedBlock: Option<Vec<u8>> = None;
-                let mut decrypted: Vec<Vec<u8>> = vec![];
-
-                for (offset, block) in encrypted.chunks(parameters.1.block_size.into()).enumerate()
-                {
-                    let lastEncryptedBlockProcessed = {
-                        if let Some(lastBlock) = lastEncryptedBlock {
-                            lastBlock.to_vec()
-                        } else {
-                            keyedHash(&iv, &devKey, parameters.1.keyed_hash_size)
-                        }
-                    };
-                    lastEncryptedBlock = Some(block.to_vec());
-
-                    let mut counter: Vec<u8> = keyedHash(
-                        &offset.to_be_bytes().to_vec(),
-                        &devKey,
-                        parameters.1.keyed_hash_size,
-                    );
-                    counter = xor(&counter, &lastEncryptedBlockProcessed);
-
-                    decrypted.push(xor(&block.to_vec(), &counter));
-                }
-
-                Ok(decrypted.concat())
-            }
+impl Into<u8> for Integrity {
+    fn into(self) -> u8 {
+        match self {
+            Integrity::Signed(_) => 0,
+            Integrity::Unsigned(_) => 1,
         }
     }
 }
 
-#[cfg(test)]
-mod Tests {
-    use rand::{thread_rng, Rng};
+impl From<u8> for Integrity {
+    fn from(byte: u8) -> Self {
+        match byte {
+            0 => Self::Signed(None),
+            1 => Self::Unsigned(None),
+            _ => panic!(
+                "'{}' is not a valid representation of an integrity type!",
+                byte
+            ),
+        }
+    }
+}
 
-    #[test]
-    fn cypher() {
-        let mut rng = thread_rng();
+impl Crypt {
+    pub fn process(&mut self) -> Result<Vec<u8>, String> {
+        match self.target {
+            Target::Encrypt => {
+                let cyphered = self.cypher()?;
+                {
+                    let construction = self.construct(cyphered.clone());
+                    match self.integrity {
+                        Integrity::Signed(_) => {
+                            self.integrity =
+                                Integrity::Signed(Some(self.keys.signing()?.sign(construction)?));
+                        }
+                        Integrity::Unsigned(_) => {
+                            self.integrity = Integrity::Unsigned(Some(keyedHash(
+                                &construction,
+                                &self.keys.subKey()?,
+                                None,
+                            )));
+                        }
+                    }
+                }
+                Ok(cyphered)
+            }
 
-        let input: Vec<u8> = (0..128).map(|_| rng.gen_range(0..u8::MAX)).collect();
-        let key: Vec<u8> = (0..64).map(|_| rng.gen_range(0..u8::MAX)).collect();
+            Target::Decrypt => {
+                let construction = self.construct(self.input.clone());
+                if let Integrity::Signed(Some(integrity)) = self.integrity.clone() {
+                    if self.keys.signing()?.verify(construction, integrity)? {
+                        Ok(self.cypher()?)
+                    } else {
+                        Err("Invalid signature!".to_string())
+                    }
+                } else if let Integrity::Unsigned(Some(integrity)) = self.integrity.clone() {
+                    if integrity == keyedHash(&construction, &self.keys.subKey()?, None) {
+                        Ok(self.cypher()?)
+                    } else {
+                        Err("Invalid hash!".to_string())
+                    }
+                } else {
+                    Err("Cannot verify integrity as it's not defined!".to_string())
+                }
+            }
+        }
+    }
 
-        let mut crypt = crate::Cypher {
-            action: crate::Action::Encrypt,
-            key,
-            input: input.clone(),
-            parameters: None,
-        };
+    fn construct(&self, cyphered: Vec<u8>) -> Vec<u8> {
+        [
+            self.block_size.to_be_bytes().to_vec(),
+            [Into::<u8>::into(self.integrity.clone())].to_vec(),
+            self.iv.clone(),
+            cyphered,
+        ]
+        .concat()
+    }
 
-        crypt.input = crypt.process().unwrap();
-        crypt.action = crate::Action::Decrypt;
+    fn cypher(&mut self) -> Result<Vec<u8>, String> {
+        match self.target {
+            Target::Encrypt => {
+                let plaintext = self.input.chunks(self.block_size.into());
+                let mut ciphertext: Vec<Vec<u8>> = vec![];
+                for (offset, block) in plaintext.enumerate() {
+                    let lastEncryptedBlock = {
+                        if let Some(lastBlock) = ciphertext.last() {
+                            lastBlock.to_vec()
+                        } else {
+                            keyedHash(&self.iv, &self.keys.subKey()?, None)
+                        }
+                    };
 
-        let decrypted = crypt.process().unwrap();
+                    let mut counter: Vec<u8> =
+                        keyedHash(&offset.to_be_bytes().to_vec(), &self.keys.subKey()?, None);
+                    counter = exclusiveOR(&counter, &lastEncryptedBlock);
 
-        assert_eq!(input, decrypted);
+                    ciphertext.push(exclusiveOR(&block.to_vec(), &counter));
+                }
+                Ok(ciphertext.concat())
+            }
+            Target::Decrypt => {
+                let mut lastEncryptedBlock: Option<Vec<u8>> = None;
+                let mut plaintext: Vec<Vec<u8>> = vec![];
+                for (offset, block) in self.input.chunks(self.block_size.into()).enumerate() {
+                    let lastEncryptedBlockProcessed = {
+                        if let Some(lastBlock) = lastEncryptedBlock {
+                            lastBlock.to_vec()
+                        } else {
+                            keyedHash(&self.iv, &self.keys.subKey()?, None)
+                        }
+                    };
+                    lastEncryptedBlock = Some(block.to_vec());
+
+                    let mut counter: Vec<u8> =
+                        keyedHash(&offset.to_be_bytes().to_vec(), &self.keys.subKey()?, None);
+                    counter = exclusiveOR(&counter, &lastEncryptedBlockProcessed);
+
+                    plaintext.push(exclusiveOR(&block.to_vec(), &counter));
+                }
+                Ok(plaintext.concat())
+            }
+        }
+    }
+
+    pub fn import(
+        target: Target,
+        keys: Keys,
+        iv: Vec<u8>,
+        block_size: Option<u16>,
+        input: Vec<u8>,
+        integrity: Integrity,
+    ) -> Self {
+        Self {
+            target,
+            keys: keys,
+            block_size: {
+                if let Some(size) = block_size {
+                    size
+                } else {
+                    config::BLOCK_SIZE.default
+                }
+            },
+            iv,
+            input,
+            integrity,
+        }
+    }
+
+    pub fn new(
+        target: Target,
+        keys: Keys,
+        iv_size: Option<u16>,
+        block_size: Option<u16>,
+        input: Vec<u8>,
+        integrity: Integrity,
+    ) -> Self {
+        Self {
+            target,
+            keys: keys,
+            block_size: {
+                if let Some(size) = block_size {
+                    size
+                } else {
+                    config::BLOCK_SIZE.default
+                }
+            },
+            iv: {
+                randomness({
+                    if let Some(size) = iv_size {
+                        size
+                    } else {
+                        config::IV_SIZE.default
+                    }
+                })
+            },
+            input,
+            integrity,
+        }
+    }
+}
+
+impl TryInto<Vec<u8>> for Crypt {
+    type Error = flexbuffers::SerializationError;
+
+    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
+        flexbuffers::to_vec(&self)
+    }
+}
+
+impl TryFrom<Vec<u8>> for Crypt {
+    type Error = flexbuffers::DeserializationError;
+
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        flexbuffers::from_slice(&value)
     }
 }
