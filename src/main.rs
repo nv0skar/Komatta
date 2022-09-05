@@ -19,9 +19,11 @@
 use Komatta::{config::*, keys::Keys, target::Target, Crypt, Integrity};
 
 use base64;
+use brotli;
 use clap::{Arg, ArgAction, Command};
 use colored::*;
 use hex;
+use std::io::Cursor;
 use std::{
     ffi::OsString,
     fs::File,
@@ -35,11 +37,23 @@ pub const OUT_FILE: &'static str = "output.txt";
 struct Transform {
     value: Vec<u8>,
     hex: bool,
+    compress: bool,
 }
 
 impl Transform {
     pub fn encode(&self) -> Result<Vec<u8>, String> {
-        let value = self.value.clone();
+        let mut value = vec![];
+        if self.compress {
+            if let Err(_) = brotli::BrotliCompress(
+                &mut Cursor::new(self.value.clone()),
+                &mut value,
+                &brotli::enc::BrotliEncoderParams::default(),
+            ) {
+                return Err("Failed to compress!".to_string());
+            }
+        } else {
+            value = self.value.clone()
+        }
         Ok({
             if self.hex {
                 hex::encode(value.clone()).as_bytes().to_vec()
@@ -65,14 +79,26 @@ impl Transform {
                 }
             }
         } {
-            Ok(decoded)
+            if self.compress {
+                let (mut compressed, mut decompressed) = (Cursor::new(decoded), vec![]);
+                if let Err(_) = brotli::BrotliDecompress(&mut compressed, &mut decompressed) {
+                    return Err("Failed to decompress!".to_string());
+                }
+                Ok(decompressed)
+            } else {
+                Ok(decoded)
+            }
         } else {
             Err("Failed to decode!".to_string())
         }
     }
 
-    pub fn new(value: Vec<u8>, hex: bool) -> Self {
-        Self { value, hex }
+    pub fn new(value: Vec<u8>, hex: bool, compress: bool) -> Self {
+        Self {
+            value,
+            hex,
+            compress,
+        }
     }
 }
 
@@ -90,10 +116,10 @@ fn main() {
                 .long("hex")
                 .required(false)
                 .action(ArgAction::SetTrue),
-            /* Arg::new("noCompression").help("encrypted data and keys won't be compressed")
+            Arg::new("noCompression").help("encrypted data and keys won't be compressed")
                 .long("noCompression")
                 .required(false)
-                .action(ArgAction::SetTrue) */
+                .action(ArgAction::SetTrue)
         ])
         .subcommands([
             Command::new("encrypt").args([
@@ -129,11 +155,11 @@ fn main() {
             ),
         ]).get_matches();
 
-    let (hex, _) = (
+    let (hex, compress) = (
         *parsed.get_one::<bool>("hex").unwrap_or_else(|| &false),
-        0, /* !*parsed
-           .get_one::<bool>("noCompression")
-           .unwrap_or_else(|| &false) */
+        !*parsed
+            .get_one::<bool>("noCompression")
+            .unwrap_or_else(|| &false),
     );
 
     let action = Target::from_str(parsed.subcommand().unwrap().0).unwrap();
@@ -149,7 +175,7 @@ fn main() {
             Target::Encrypt => {
                 if let Some(masterKey) = key {
                     Keys::try_from(
-                        Transform::new(masterKey.as_bytes().to_vec(), hex)
+                        Transform::new(masterKey.as_bytes().to_vec(), hex, compress)
                             .decode()
                             .unwrap(),
                     )
@@ -180,7 +206,7 @@ fn main() {
             Target::Decrypt => {
                 if let Some(decryptKey) = key {
                     Keys::try_from(
-                        Transform::new(decryptKey.as_bytes().to_vec(), hex)
+                        Transform::new(decryptKey.as_bytes().to_vec(), hex, compress)
                             .decode()
                             .unwrap(),
                     )
@@ -207,7 +233,7 @@ fn main() {
                 .unwrap()
                 .as_bytes()
                 .to_vec();
-            Transform::new(input, hex).decode().unwrap()
+            Transform::new(input, hex, compress).decode().unwrap()
         }
     };
 
@@ -278,7 +304,7 @@ fn main() {
                 }
             },
             Target::Decrypt => {
-                String::from_utf8(Transform::new(input.clone(), hex)
+                String::from_utf8(Transform::new(input.clone(), hex, compress)
                 .encode()
                 .unwrap()).unwrap()
             },
@@ -288,14 +314,14 @@ fn main() {
             let masterKey = TryInto::<Vec<u8>>::try_into(crypt.keys.clone()).unwrap();
             if let Ok(keys) = crypt.keys.signing() {
                 if let Some(_) = keys.secret {
-                    String::from_utf8(Transform::new(masterKey, hex)
+                    String::from_utf8(Transform::new(masterKey, hex, compress)
                     .encode()
                     .unwrap()).unwrap()
                 } else {
                     format!("{}", "Not available".bright_red().bold())
                 }
             } else{
-                String::from_utf8(Transform::new(masterKey, hex)
+                String::from_utf8(Transform::new(masterKey, hex, compress)
                     .encode()
                     .unwrap()).unwrap()
             }
@@ -304,7 +330,7 @@ fn main() {
         match crypt.integrity {
             Integrity::Signed(_) => {
                 let decryptKey = TryInto::<Vec<u8>>::try_into(crypt.keys.clone().public().unwrap()).unwrap();
-                String::from_utf8(Transform::new(decryptKey, hex)
+                String::from_utf8(Transform::new(decryptKey, hex, compress)
                     .encode()
                     .unwrap()).unwrap()
             },
@@ -318,7 +344,7 @@ fn main() {
                     out.input = out.process().unwrap();
                     out
                 });
-                String::from_utf8(Transform::new(encrypted.unwrap(), hex)
+                String::from_utf8(Transform::new(encrypted.unwrap(), hex, compress)
                     .encode()
                     .unwrap()).unwrap()
             },

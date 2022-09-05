@@ -7,4 +7,4 @@
 
 ## <a name="development"></a>発達 🧑‍💻
 ### <a name="developmentTODO"></a>リストを行う 🛸
-- [ ] Data and keys compression
+- [x] Data and keys compression
