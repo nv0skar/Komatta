@@ -127,10 +127,10 @@ impl Crypt {
         match self.target {
             Target::Encrypt => {
                 let plaintext = self.input.chunks(self.block_size.into());
-                let mut ciphertext: Vec<Vec<u8>> = vec![];
+                let mut cyphertext: Vec<Vec<u8>> = vec![];
                 for (offset, block) in plaintext.enumerate() {
                     let lastEncryptedBlock = {
-                        if let Some(lastBlock) = ciphertext.last() {
+                        if let Some(lastBlock) = cyphertext.last() {
                             lastBlock.to_vec()
                         } else {
                             keyedHash(&self.iv, &self.keys.subKey()?, None)
@@ -141,9 +141,9 @@ impl Crypt {
                         keyedHash(&offset.to_be_bytes().to_vec(), &self.keys.subKey()?, None);
                     counter = exclusiveOR(&counter, &lastEncryptedBlock);
 
-                    ciphertext.push(exclusiveOR(&block.to_vec(), &counter));
+                    cyphertext.push(exclusiveOR(&block.to_vec(), &counter));
                 }
-                Ok(ciphertext.concat())
+                Ok(cyphertext.concat())
             }
             Target::Decrypt => {
                 let mut lastEncryptedBlock: Option<Vec<u8>> = None;
