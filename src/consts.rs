@@ -14,9 +14,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{fmt, fmt::Display, ops::Range};
-
 use crate::keys::Signing;
+
+use std::{fmt, fmt::Display, ops::Range};
 
 use argon2;
 use blake3;
@@ -89,8 +89,12 @@ pub const KEYED_HASH_SIZE: Size<u16> = Size::new(
     Behaviour::Ranged(blake3::OUT_LEN as u16..u16::MAX),
 );
 
-pub const CRYPT_KEY_SIZE: Size<u16> =
-    Size::new("Crypt Key Size", 16, Behaviour::Ranged(16..u16::MAX));
+pub const CRYPT_KEY_SIZE: Size<u16> = Size::new(
+    "Crypt Key Size",
+    CRYPT_KEY_SIZE_VALUE,
+    Behaviour::Ranged(16..u16::MAX),
+);
+pub const CRYPT_KEY_SIZE_VALUE: u16 = 16;
 pub const SIGNING_KEY_SIZE: Signing::Keys<Size<u16>> = Signing::Keys {
     secret: Size::new(
         "Signing Secret Key Size",

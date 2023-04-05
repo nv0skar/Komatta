@@ -14,8 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::config;
-use crate::ops::randomness;
+use crate::{consts, ops::randomness};
 
 use argon2;
 use flexbuffers;
@@ -32,13 +31,13 @@ pub struct Keys {
 
 impl Keys {
     fn constraint(&self) -> Result<&Self, String> {
-        config::CRYPT_KEY_SIZE.check(self.cypher.len() as u16)?;
+        consts::CRYPT_KEY_SIZE.check(self.cypher.len() as u16)?;
         if let Some(signing) = self.signing.clone() {
             if let Some(secret) = signing.secret {
-                config::SIGNING_KEY_SIZE.secret.check(secret.len() as u16)?;
+                consts::SIGNING_KEY_SIZE.secret.check(secret.len() as u16)?;
             }
             if let Some(public) = signing.public {
-                config::SIGNING_KEY_SIZE.public.check(public.len() as u16)?;
+                consts::SIGNING_KEY_SIZE.public.check(public.len() as u16)?;
             }
         }
         Ok(self)
@@ -60,8 +59,8 @@ impl Keys {
             let Deriver =
                 argon2::Argon2::new(argon2::Algorithm::default(), argon2::Version::default(), {
                     let mut Params = argon2::ParamsBuilder::new();
-                    Params.output_len(self.cypher.len()).unwrap();
-                    Params.params().unwrap()
+                    Params.output_len(self.cypher.len());
+                    Params.build().unwrap()
                 });
 
             let mut Derived: Vec<u8> = vec![0; self.cypher.len()];
@@ -99,14 +98,14 @@ impl Keys {
                 if let Some(size) = saltSize {
                     size
                 } else {
-                    config::SALT_SIZE.default
+                    consts::SALT_SIZE.default
                 }
             }),
             cypher: randomness({
                 if let Some(size) = cryptKeySize {
                     size
                 } else {
-                    config::CRYPT_KEY_SIZE.default
+                    consts::CRYPT_KEY_SIZE.default
                 }
             }),
             signing: {

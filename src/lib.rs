@@ -16,14 +16,16 @@
 
 #![allow(non_snake_case)]
 
-pub mod config;
+pub mod consts;
 pub mod keys;
 pub mod ops;
 pub mod target;
 
-use crate::keys::Keys;
-use crate::ops::{exclusiveOR, keyedHash, randomness};
-use crate::target::Target;
+use crate::{
+    keys::Keys,
+    ops::{exclusiveOR, keyedHash, randomness},
+    target::Target,
+};
 
 use flexbuffers;
 use serde::{Deserialize, Serialize};
@@ -184,7 +186,7 @@ impl Crypt {
                 if let Some(size) = block_size {
                     size
                 } else {
-                    config::BLOCK_SIZE.default
+                    consts::BLOCK_SIZE.default
                 }
             },
             iv,
@@ -208,7 +210,7 @@ impl Crypt {
                 if let Some(size) = block_size {
                     size
                 } else {
-                    config::BLOCK_SIZE.default
+                    consts::BLOCK_SIZE.default
                 }
             },
             iv: {
@@ -216,7 +218,7 @@ impl Crypt {
                     if let Some(size) = iv_size {
                         size
                     } else {
-                        config::IV_SIZE.default
+                        consts::IV_SIZE.default
                     }
                 })
             },

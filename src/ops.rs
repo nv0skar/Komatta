@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::config;
+use crate::consts;
 
 use blake3;
 use rand::{thread_rng, Rng};
@@ -42,7 +42,7 @@ pub fn keyedHash(input: &Vec<u8>, key: &Vec<u8>, outSize: Option<u16>) -> Vec<u8
             if let Some(size) = outSize {
                 size.into()
             } else {
-                config::KEYED_HASH_SIZE.default.into()
+                consts::KEYED_HASH_SIZE.default.into()
             }
         }
     ];
